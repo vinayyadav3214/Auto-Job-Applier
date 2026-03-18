@@ -211,7 +211,13 @@ def _build_hard_rules(profile: dict) -> str:
     return f"""== HARD RULES (never break these) ==
 1. Never lie about: citizenship, work authorization, criminal history, education credentials, security clearance, licenses.
 2. {work_auth_rule}
-3. {name_rule}"""
+3. {name_rule}
+4. CREDENTIALS: For ALL sign-in and sign-up forms on ANY site, use ONLY:
+   - Email: {personal['email']}
+   - Password: {personal.get('password', '')}
+   NEVER use a different email, Gmail alias (+tag), made-up address, or different password.
+   If sign-in fails: try sign-up with the SAME email and password above.
+   If sign-up also fails: output RESULT:FAILED:login_issue. Do NOT invent credentials."""
 
 
 def _build_captcha_section() -> str:

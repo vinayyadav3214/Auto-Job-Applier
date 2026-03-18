@@ -1,0 +1,11 @@
+John Doe
+Software Engineer
+
+Experience:
+- Company A, 2020-2023, Developed software
+- Company B, 2018-2020, Intern
+
+Education:
+- University, BS Computer Science
+
+Skills: Python, Java, etc.

@@ -321,9 +321,17 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
     mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
+    # Resolve the claude executable — on Windows it's claude.cmd in the npm bin dir
+    _claude_exe = "claude"
+    if platform.system() == "Windows":
+        _npm_bin = Path.home() / "AppData" / "Roaming" / "npm"
+        _candidate = _npm_bin / "claude.cmd"
+        if _candidate.exists():
+            _claude_exe = str(_candidate)
+
     # Build claude command
     cmd = [
-        "claude",
+        _claude_exe,
         "--model", model,
         "-p",
         "--mcp-config", str(mcp_config_path),
@@ -346,6 +354,13 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
+    # On Windows, npm global bin (where claude.cmd lives) may be missing from
+    # the subprocess PATH even if it's in the interactive shell PATH.
+    if platform.system() == "Windows":
+        npm_bin = str(Path.home() / "AppData" / "Roaming" / "npm")
+        if npm_bin not in env.get("PATH", ""):
+            env["PATH"] = npm_bin + os.pathsep + env.get("PATH", "")
 
     worker_dir = reset_worker_dir(worker_id)
 

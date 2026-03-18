@@ -10,6 +10,7 @@ Interactive flow that creates ~/.applypilot/ with:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,9 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
+
+import tkinter as tk
+from tkinter import filedialog
 
 from applypilot.config import (
     APP_DIR,
@@ -31,47 +35,84 @@ from applypilot.config import (
 console = Console()
 
 
+def extract_profile_from_resume(resume_text: str) -> dict:
+    extracted = {}
+    lines = resume_text.split('\n')
+    # Assume first non-empty line is name
+    for line in lines:
+        line = line.strip()
+        if line:
+            extracted['full_name'] = line
+            break
+    # Email
+    email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', resume_text)
+    if email_match:
+        extracted['email'] = email_match.group()
+    # Phone
+    phone_match = re.search(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b', resume_text)
+    if phone_match:
+        extracted['phone'] = phone_match.group()
+    # Preferred name as first name
+    if 'full_name' in extracted:
+        name_parts = extracted['full_name'].split()
+        if name_parts:
+            extracted['preferred_name'] = name_parts[0]
+    return extracted
+
+
 # ---------------------------------------------------------------------------
 # Resume
 # ---------------------------------------------------------------------------
 
 def _setup_resume() -> None:
     """Prompt for resume file and copy into APP_DIR."""
-    console.print(Panel("[bold]Step 1: Resume[/bold]\nPoint to your master resume file (.txt or .pdf)."))
+    console.print(Panel("[bold]Step 1: Resume[/bold]\nSelect your master resume file (.txt or .pdf)."))
 
-    while True:
-        path_str = Prompt.ask("Resume file path")
-        src = Path(path_str.strip().strip('"').strip("'")).expanduser().resolve()
+    root = tk.Tk()
+    root.withdraw()
+    path_str = filedialog.askopenfilename(title="Select your resume file", filetypes=[("Text files", "*.txt"), ("PDF files", "*.pdf"), ("Word files", "*.docx")])
+    if not path_str:
+        console.print("[red]No file selected. Exiting setup.[/red]")
+        raise typer.Exit()
 
-        if not src.exists():
-            console.print(f"[red]File not found:[/red] {src}")
-            continue
+    src = Path(path_str).expanduser().resolve()
 
-        suffix = src.suffix.lower()
-        if suffix not in (".txt", ".pdf"):
-            console.print("[red]Unsupported format.[/red] Provide a .txt or .pdf file.")
-            continue
+    if not src.exists():
+        console.print(f"[red]File not found:[/red] {src}")
+        raise typer.Exit()
 
-        if suffix == ".txt":
+    suffix = src.suffix.lower()
+    if suffix not in (".txt", ".pdf", ".docx"):
+        console.print("[red]Unsupported format.[/red] Provide a .txt, .pdf, or .docx file.")
+        raise typer.Exit()
+
+    if suffix == ".txt":
+        # If the user selected the same file already in the config dir, don't copy
+        if src.resolve() != RESUME_PATH.resolve():
             shutil.copy2(src, RESUME_PATH)
-            console.print(f"[green]Copied to {RESUME_PATH}[/green]")
-        elif suffix == ".pdf":
+        console.print(f"[green]Saved resume text to {RESUME_PATH}[/green]")
+    elif suffix == ".pdf":
+        if src.resolve() != RESUME_PDF_PATH.resolve():
             shutil.copy2(src, RESUME_PDF_PATH)
-            console.print(f"[green]Copied to {RESUME_PDF_PATH}[/green]")
+        console.print(f"[green]Saved resume PDF to {RESUME_PDF_PATH}[/green]")
 
-            # Also ask for a plain-text version for LLM consumption
-            txt_path_str = Prompt.ask(
-                "Plain-text version of your resume (.txt)",
-                default="",
-            )
-            if txt_path_str.strip():
-                txt_src = Path(txt_path_str.strip().strip('"').strip("'")).expanduser().resolve()
-                if txt_src.exists():
-                    shutil.copy2(txt_src, RESUME_PATH)
-                    console.print(f"[green]Copied to {RESUME_PATH}[/green]")
-                else:
-                    console.print("[yellow]File not found, skipping plain-text copy.[/yellow]")
-        break
+        # Also ask for a plain-text version for LLM consumption
+        txt_path_str = filedialog.askopenfilename(title="Select plain-text version of your resume", filetypes=[("Text files", "*.txt")])
+        if txt_path_str:
+            txt_src = Path(txt_path_str).expanduser().resolve()
+            if txt_src.exists():
+                shutil.copy2(txt_src, RESUME_PATH)
+                console.print(f"[green]Copied to {RESUME_PATH}[/green]")
+            else:
+                console.print("[yellow]File not found, skipping plain-text copy.[/yellow]")
+        else:
+            console.print("[yellow]No plain-text version selected.[/yellow]")
+    elif suffix == ".docx":
+        from docx import Document
+        doc = Document(src)
+        text = "\n".join([para.text for para in doc.paragraphs])
+        RESUME_PATH.write_text(text, encoding="utf-8")
+        console.print(f"[green]Extracted text from DOCX and saved to {RESUME_PATH}[/green]")
 
 
 # ---------------------------------------------------------------------------
@@ -82,16 +123,36 @@ def _setup_profile() -> dict:
     """Walk through profile questions and return a nested profile dict."""
     console.print(Panel("[bold]Step 2: Profile[/bold]\nTell ApplyPilot about yourself. This powers scoring, tailoring, and auto-fill."))
 
+    # Check for profile.json in current directory
+    profile_file = Path("profile.json")
+    if profile_file.exists():
+        try:
+            with open(profile_file, 'r', encoding='utf-8') as f:
+                profile = json.load(f)
+            console.print(f"[green]Loaded profile from {profile_file}[/green]")
+            PROFILE_PATH.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+            console.print(f"[green]Profile saved to {PROFILE_PATH}[/green]")
+            return profile
+        except Exception as e:
+            console.print(f"[red]Failed to load profile.json: {e}. Entering manually.[/red]")
+    else:
+        console.print("[dim]Tip: Create profile.json in this directory with your details to skip manual entry.[/dim]")
+
+    extracted = {}
+    if RESUME_PATH.exists():
+        resume_text = RESUME_PATH.read_text(encoding='utf-8')
+        extracted = extract_profile_from_resume(resume_text)
+
     profile: dict = {}
 
     # -- Personal --
     console.print("\n[bold cyan]Personal Information[/bold cyan]")
-    full_name = Prompt.ask("Full name")
+    full_name = Prompt.ask("Full name", default=extracted.get('full_name', ''))
     profile["personal"] = {
         "full_name": full_name,
-        "preferred_name": Prompt.ask("Preferred/nickname (leave blank to use first name)", default=""),
-        "email": Prompt.ask("Email address"),
-        "phone": Prompt.ask("Phone number", default=""),
+        "preferred_name": Prompt.ask("Preferred/nickname (leave blank to use first name)", default=extracted.get('preferred_name', '')),
+        "email": Prompt.ask("Email address", default=extracted.get('email', '')),
+        "phone": Prompt.ask("Phone number", default=extracted.get('phone', '')),
         "city": Prompt.ask("City"),
         "province_state": Prompt.ask("Province/State (e.g. Ontario, California)", default=""),
         "country": Prompt.ask("Country"),
